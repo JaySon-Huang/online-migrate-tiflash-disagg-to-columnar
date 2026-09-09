@@ -220,6 +220,7 @@ server_configs:
     storage.block-cache.capacity: 8GB
     storage.enable-ttl: true
   pd:
+    replication.location-labels: [zone, host]
     replication.max-replicas: 1
   tiflash:
     logger.level: info
