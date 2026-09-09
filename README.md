@@ -6,6 +6,7 @@
 
 ## 文档
 
+- [handoff.md](./handoff.md)：给下一 agent 的交接（进度、约束、建议 skill）
 - [online-migrate-tiflash-write-to-columnar-test.md](./online-migrate-tiflash-write-to-columnar-test.md)：测试计划（阶段、门禁、环境参数）
 - [gen_tiflash_cluster_topo.py](./gen_tiflash_cluster_topo.py)：生成 tiup topology YAML
 
