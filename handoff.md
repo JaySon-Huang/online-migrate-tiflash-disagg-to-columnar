@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-09  
 **From session:** [online migrate plan](b82293f5-1288-42d3-8d18-d4abdf1e43c0)  
-**Next session focus:** 接手已结算的实验室测试：不要重开设计讨论；用户确认后按测试计划部署 `j4`、跑 `forward` / `rollback_read_path`。
+**Next session focus:** `j4` 已在起始态跑着。不要重开设计。按 [j4-lab.md](./j4-lab.md) 灌 1 warehouse CH，再按测试计划跑 `forward` / `rollback_read_path`。
 
 ## Goal
 
@@ -15,6 +15,7 @@
 | 内容 | 位置 |
 |---|---|
 | 本交接文档 | [handoff.md](./handoff.md) |
+| j4 部署结果与 CH 导入 | [j4-lab.md](./j4-lab.md) |
 | 测试计划（阶段、门禁、环境、明确不做） | [online-migrate-tiflash-write-to-columnar-test.md](./online-migrate-tiflash-write-to-columnar-test.md) |
 | 拓扑生成脚本 | [gen_tiflash_cluster_topo.py](./gen_tiflash_cluster_topo.py) |
 | GitHub repo | https://github.com/JaySon-Huang/online-migrate-tiflash-disagg-to-columnar |
@@ -27,16 +28,16 @@
 
 **已完成**
 
-- 设计 grilling 已收口；测试计划 Status=Draft，尚未落地执行。
-- 生成脚本可用：`--cluster`、`--dfs-prefix` 必填；`--tiflash-s3-root` 仅 `--cn-mode=disagg` 必填，`--cn-mode=columnar` 默认空。
-- 已建 public repo `JaySon-Huang/online-migrate-tiflash-disagg-to-columnar`。
-- 用户明确：**未授权则不要** `tiup cluster check` / `deploy` / `start`。
+- 设计 grilling 已收口；测试计划 Status=Draft。
+- 生成脚本可用；PD `replication.location-labels: [zone, host]` 已写入脚本。
+- **`j4` 已 deploy / offline patch / start**，起始态 2 classic CN + 2 WN。细节：[j4-lab.md](./j4-lab.md)。
+- ks1 `smoke.t` replica 2，TiKV 与 tiflash COUNT/SUM 一致。
 
 **未做（下一 agent 的工作面）**
 
-- 未生成最终 yaml、未 deploy、未 patch、未 start。
-- 无 CH-benCHmark 驱动脚本、对账脚本、Grafana import。
-- 未跑 1 warehouse 流程，更未跑 1500 warehouse。
+- 尚未灌 1 warehouse CH-benCHmark（命令已写在 j4-lab.md，未执行）。
+- 无持续 TP+AP、对账脚本、Grafana import。
+- 未跑 `forward` / `rollback_read_path`，更未跑 1500 warehouse。
 - 混合 CN 窗口正确性是产品要求，实验室尚未实证。
 
 ## 执行时必须遵守（文档里有，这里只标容易踩的）
@@ -64,10 +65,10 @@ python3 gen_tiflash_cluster_topo.py --cluster j4 \
     -o /tmp/j4-tiflash-write.yaml
 ```
 
-## 建议下一跳（等用户说「部署 / 开跑」）
+## 建议下一跳（等用户说「灌数 / 开跑」）
 
-1. 读测试计划全文，再读 `tiup-columnar-deploy`。
-2. 生成 yaml → `tiup cluster check` → deploy 官方壳 `v8.5.6` → offline patch → **确认 CN 未设 `TIFLASH_COLUMNAR`** → start。
+1. 读 [j4-lab.md](./j4-lab.md) 和测试计划，再读 `tiup-columnar-deploy`。
+2. 按 j4-lab 灌 1 warehouse CH（`tpcc` on 8041）→ replica 2 → `AVAILABLE=1` → ANALYZE。不要在导入阶段 `run`。
 3. 1 warehouse 走完整 `forward` 流程（含混合 CN 对账）后再考虑 1500 和独立 `rollback_read_path`。
 4. 操作脚本若要长期保留，放到本仓库，不要只留在 tiflash-2 `docs/`。
 

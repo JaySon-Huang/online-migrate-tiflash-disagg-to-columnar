@@ -2,10 +2,11 @@
 
 在持续 CH-benCHmark（TP + AP）下，把 next-gen **tiflash-write + tiflash-compute** 集群在线迁到 **tikv-worker columnar**（Write Node 全部下线，Compute Node 读 S3 上的 `.col`）。
 
-本仓库只放测试计划和 tiup 拓扑生成脚本，不包含一次具体跑出来的数据。
+测试计划与拓扑脚本在本仓库；一次具体部署的端口、二进制和导入命令记在 [j4-lab.md](./j4-lab.md)。
 
 ## 文档
 
+- [j4-lab.md](./j4-lab.md)：j4 部署结果 + 1 warehouse CH-benCHmark 导入步骤
 - [handoff.md](./handoff.md)：给下一 agent 的交接（进度、约束、建议 skill）
 - [online-migrate-tiflash-write-to-columnar-test.md](./online-migrate-tiflash-write-to-columnar-test.md)：测试计划（阶段、门禁、环境参数）
 - [gen_tiflash_cluster_topo.py](./gen_tiflash_cluster_topo.py)：生成 tiup topology YAML
