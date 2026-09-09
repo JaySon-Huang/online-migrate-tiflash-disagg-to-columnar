@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-09  
 **From session:** [online migrate plan](b82293f5-1288-42d3-8d18-d4abdf1e43c0)  
-**Next session focus:** `j4` 已过 forward 阶段 2 门禁（`columnar_status` + WN 路径对账）。下一步是旁路库 epoch A，然后才切第一台 CN。不要重开设计。不要动 `j1` / `j3`。
+**Next session focus:** `j4` 已过 forward 阶段 2 门禁，旁路库 **epoch A 已过**。下一步是切第一台 CN（混合窗）。不要重开设计。不要动 `j1` / `j3`。不要对 CH 表 `SET REPLICA 0`。
 
 ## Goal
 
@@ -24,7 +24,7 @@
 
 两份脚本/文档应视为同源。本仓库示例命令用仓库根路径；tiflash-2 里脚本 `__doc__` 仍写 `docs/design/gen_tiflash_cluster_topo.py`。
 
-## 当前进度（2026-09-09 17:00 左右）
+## 当前进度（2026-09-09 17:12 左右）
 
 **已完成**
 
@@ -43,14 +43,51 @@
   - ks1 `keyspace_id=1` 上 13 张 `tiflash_replica.count>0` 的表全部 `columnar_status.ready==total==1`
   - S3 `jayson-columnar-test/j4/tikv` 已有 `.col`；部分 region（如 364）`columnar-levels` 非空。这是辅助证据，不是主门禁
   - WN 路径对账：同一 `tidb_snapshot` 下 tikv vs tiflash，连续 3 轮 19 条聚合全部一致（见下节）
+- **旁路库 epoch A 已过**（`mig_side`，ks1 `8041`）。CH 表全程未 `SET REPLICA 0`。见下节。
 - 四个 TiFlash 进程仍是 `.../binaries/tiflash/tiflash`（classic CN + WN）
 
 **未做（下一 agent 的工作面）**
 
-- 旁路库 epoch A（`mig_side` 一类；不要对 CH 表 `SET REPLICA 0`）
-- 切第一台 CN（混合窗）以及之后的 `forward` 步骤
+- 切第一台 CN（混合窗 / epoch B）以及之后的 `forward` 步骤
 - 独立用例 `rollback_read_path`
 - 1500 warehouse、Grafana import、把对账收成仓库脚本
+
+## 旁路库 epoch A（2026-09-09）
+
+集群状态当时：`cse.columnar-store-type=both`，两 CN classic。库名 **`mig_side`**，不要对 `tpcc` / `smoke` 做 SET 0/1。
+
+| 表 | table_id | 操作 | 结束态 |
+|---|---|---|---|
+| `mig_side.keep2` | 75 | `SET TIFLASH REPLICA 2`，留下 | replica 2 / AVAILABLE=1；region **410** 在 WN 292+293 有 learner；`columnar_status.ready=1,total=1` |
+| `mig_side.flip` | 77 | 先 SET 2 再 SET 0 | replica 行消失；region **415** 只剩 TiKV voter；`ready=0,total=1`；行存仍在（COUNT=1000） |
+
+两张表各 1000 行，`SUM(v)=5005000`。`keep2` 同一 snapshot 下 tikv / tiflash COUNT/SUM 一致。WN region 数：13（CH+smoke）→ SET 2 后 15 → `flip` SET 0 后 **14**。CH + `smoke.t` 仍是 13 张 `REPLICA 2 AVAILABLE=1`。
+
+### 怎么看 WN learner
+
+`SHOW TABLE <t> REGIONS` 的 `PEERS` 列是 **peer id**，不是 store id。要用 PD：
+
+```text
+GET http://10.2.12.81:6540/pd/api/v1/region/id/<region_id>
+```
+
+learner：`store_id` ∈ {**292** (`:9560`), **293** (`:9565`)} 且 `role_name=Learner`。CN store 294/295 的 region 数应仍为 0。
+
+### SET 0 时不要把 `total==0` 当消失
+
+`GET /kvengine/columnar_status` 的语义（CSE `collect_columnar_status`）：
+
+- **`total`**：key range 覆盖该表的 shard 数（行存 region 还在就会 ≥1）
+- **`ready`**：这些 shard 里 `has_columnar_table(table_id)` 为真的数量（schema 已安装）
+
+因此：
+
+- SET 2 就绪：`ready==total` 且 `total>0`（与 CH 表门禁相同）
+- SET 0 「columnar 消失」：等 **`ready==0`**（实验室约 3s）。**不要**等 `total==0`，表没 DROP 的话 `total` 会一直是 1。曾经按 `total==0` 空等 180s 超时，那是误判。
+
+对照：`GET /kvengine/<region_id>` 的 `columnar-tables`，`flip` SET 0 后为 0，`keep2` 仍为 1。
+
+epoch B 应复用这两张表：`keep2` 已是 replica 2；`flip` 再 SET 2 测混合窗下新建 learner+columnar。仍不要动 CH 表。
 
 ## 对账：注意点
 
@@ -65,11 +102,11 @@
    SET SESSION tidb_snapshot = @ts;
    ```
    `SELECT @@tidb_current_ts INTO @ts` 在这版 TiDB 会语法错误。`SET SESSION tidb_snapshot = @ts` 接受这个 TSO。
-3. **连 ks1 `8041`，不要打 SYSTEM `8040`。** 覆盖全部 `tiflash_replica.count > 0` 的表：`tpcc.*` 12 张 + `smoke.t`。
+3. **连 ks1 `8041`，不要打 SYSTEM `8040`。** 覆盖全部当前 `tiflash_replica.count > 0` 的表：`tpcc.*` 12 张 + `smoke.t` + `mig_side.keep2`。不要把已 SET 0 的 `flip` 算进 `ready==total` 门禁。
 4. 本阶段不要求 K=10。K=10 是切完两台 CN 之后的观察期。这次实验室跑了 3 轮（轮间 sleep 5s）；一轮失败即应停下查，不要切 CN。
 5. 轮次之间绝对值会涨（例如 `order_line` 从导入时的 30 万涨到对账时约 100 万），只要 **同一 snapshot 内** tikv 与 tiflash 相同即可。
 6. mysql `-N -B` 会把结果里的 TAB 转义成字面 `\t`。不要用 `CHAR(9)` / 真 TAB 当分隔符再 `split('\t')`；用 `|` 或固定列更省事。
-7. 切第一台 CN 之前仍要再确认一遍 `columnar_status.ready==total`。**不要**等 `unconverted-l0-count` 收敛。
+7. 切第一台 CN 之前仍要再确认一遍当前 `count>0` 表的 `columnar_status.ready==total`。**不要**等 `unconverted-l0-count` 收敛。SET 0 后看 `ready==0`，不要等 `total==0`。
 
 `columnar_status`（TiKV **status** 端口 16540，不要打 gRPC 7540）：
 
@@ -92,8 +129,10 @@ GET http://10.2.12.81:16540/kvengine/columnar_status?keyspace_id=1&table_id=<id>
 | tpcc.nation | 41 |
 | tpcc.region | 43 |
 | tpcc.supplier | 45 |
+| mig_side.keep2 | 75 |
+| mig_side.flip | 77（SET 0 后无 replica 行；`ready` 应为 0） |
 
-`information_schema.tables.TIDB_TABLE_ID` 与 `information_schema.tiflash_replica.TABLE_ID` 一致。`KEYSPACE_ID=1`。
+`information_schema.tables.TIDB_TABLE_ID` 与 `information_schema.tiflash_replica.TABLE_ID` 一致。`KEYSPACE_ID=1`。切 CN 前 `ready==total` 的对象是 **当前 `count>0` 的表**（CH + `smoke.t` + `keep2`），不要把已 SET 0 的 `flip` 算进去。
 
 ## 对账：使用的语句
 
@@ -118,6 +157,7 @@ SET SESSION tidb_snapshot = '';
 
 ```sql
 SELECT CONCAT_WS(',', COUNT(*), IFNULL(SUM(v),0)) FROM smoke.t;
+SELECT CONCAT_WS(',', COUNT(*), IFNULL(SUM(v),0)) FROM mig_side.keep2;
 SELECT COUNT(*) FROM tpcc.warehouse;
 SELECT COUNT(*) FROM tpcc.district;
 SELECT COUNT(*) FROM tpcc.item;
@@ -170,10 +210,11 @@ python3 gen_tiflash_cluster_topo.py --cluster j4 \
 ## 建议下一跳（等用户明确说再动手）
 
 1. 读本文件、[j4-lab.md](./j4-lab.md) 和测试计划，再读 `tiup-columnar-deploy`。
-2. 旁路库进入 [epoch A](./online-migrate-tiflash-write-to-columnar-test.md#旁路表-replica-矩阵)。CH 表保持 `REPLICA 2`。
-3. 切 CN0 前再确认一遍 `columnar_status`。混合窗用同一套 snapshot 对账语句；K 轮失败即停。不要等 L0 转完。
-4. 1 warehouse 走完整 `forward` 后再考虑 1500 和独立 `rollback_read_path`。不要在这条 CH 曲线中间插入回退。
-5. TP/AP 仍在跑就不要无故杀掉。对账脚本若要长期保留，放到本仓库，不要只留在 tiflash-2 `docs/`。
+2. 切 CN0 前再确认一遍 **当前 `count>0` 表** 的 `columnar_status.ready==total`（含 `keep2`，不含 `flip`）。
+3. 切 CN0：`flash.use_columnar=true` + `export TIFLASH_COLUMNAR=true` 进该实例 `run_tiflash.sh` + **只重启该 CN**。进程应变成 `.../tiflash-columnar/tiflash`。WN 禁止该变量。
+4. 混合窗用同一套 snapshot 对账语句；K 轮失败即停。不要等 L0 转完。然后旁路库 [epoch B](./online-migrate-tiflash-write-to-columnar-test.md#旁路表-replica-矩阵)。
+5. 1 warehouse 走完整 `forward` 后再考虑 1500 和独立 `rollback_read_path`。不要在这条 CH 曲线中间插入回退。
+6. TP/AP 仍在跑就不要无故杀掉。对账脚本若要长期保留，放到本仓库，不要只留在 tiflash-2 `docs/`。
 
 ## Suggested skills
 
