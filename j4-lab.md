@@ -2,7 +2,7 @@
 
 - Date: 2026-09-09
 - Cluster: **`j4`**（新建，未改 `j1` / `j3`）
-- Status: 起始态已部署并 smoke 通过；**1 warehouse CH 已灌入 ks1 `tpcc`**（replica 2 `AVAILABLE=1`，未 `run` 持续负载）
+- Status: 本文是 **部署 + 1 warehouse 导入** 的落地记录，不要当当前运行态。当前 store-type / CN 二进制 / PD rule / 下一步见 [handoff.md](./handoff.md)。
 - 测试计划仍以 [online-migrate-tiflash-write-to-columnar-test.md](./online-migrate-tiflash-write-to-columnar-test.md) 为准。本文只记这次落地的事实和导入命令。
 
 ## 部署结果

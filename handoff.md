@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-09  
 **From session:** [online migrate plan](b82293f5-1288-42d3-8d18-d4abdf1e43c0)  
-**Next session focus:** `j4` 两台 CN 都已是 columnar，观察期 K=10 已过。store-type **仍是 `both`**。下一步才是 `cse.columnar-store-type=columnar`，然后删 PD group `tiflash` rules、等 WN region=0、scale-in WN。不要重开设计。不要动 `j1` / `j3`。不要对 CH 表 `SET REPLICA 0`。仍为 `both` 时不要删 placement-rule。WN 禁止 `TIFLASH_COLUMNAR`。不要在这条 CH 曲线中间插入 `rollback_read_path`。
+**Next session focus:** `j4` 两 CN 已是 columnar，TiDB `cse.columnar-store-type=columnar`，store-type 切完后 10min 负载观察已过。**PD group `tiflash` rules 仍在，WN 未缩容（各 14 region）。下一步是独立 `rollback_read_path`（CN 切回 classic，读 WN），回滚测完再删 rule / scale-in WN。** reload **必须** `-R` 组件或 `-N host:port`，禁止整集群 reload。不要重开设计。不要动 `j1` / `j3`。不要对 CH 表 `SET REPLICA 0`。WN 禁止 `TIFLASH_COLUMNAR`。
 
 ## Goal
 
@@ -24,7 +24,7 @@
 
 两份脚本/文档应视为同源。本仓库示例命令用仓库根路径；tiflash-2 里脚本 `__doc__` 仍写 `docs/design/gen_tiflash_cluster_topo.py`。
 
-## 当前进度（2026-09-09 20:11 左右）
+## 当前进度（2026-09-09 20:51）
 
 **已完成**
 
@@ -37,7 +37,7 @@
   - `-T 0` 才是 AP-only（Q1–Q22）。**不要**给 TP 进程加 tiflash isolation。`--ignore-error` 是为了扛双重物化重启。
   - `logs/*.log` 已 gitignore，不要把持续输出提交进去。
 - 双重物化已打开并 reload **TiDB + TiKV**（未 reload TiFlash / worker，未设 `TIFLASH_COLUMNAR`）：
-  - TiDB `cse.columnar-store-type=both`（8040 与 8041）
+  - TiDB 当时 `cse.columnar-store-type=both`（8040 与 8041）；**现已改为 `columnar`**
   - TiKV `kvengine.build-columnar=true`（必须重启，`online_config(skip)`）
 - **forward 阶段 2 门禁已过**（切 CN 之前）：
   - ks1 `keyspace_id=1` 上 13 张 `tiflash_replica.count>0` 的表全部 `columnar_status.ready==total==1`
@@ -50,13 +50,15 @@
   - CN0 `10.2.12.81:5040` → `.../tiflash-columnar/tiflash`，`use_columnar=true`，`TIFLASH_COLUMNAR=true`
   - CN1 `10.2.12.81:5045` → `.../tiflash-columnar/tiflash`，`use_columnar=true`，`TIFLASH_COLUMNAR=true`
   - WN `5060` / `5065` → classic，**没有** `TIFLASH_COLUMNAR`
-- store-type 仍是 **`both`**。placement-rule 还在。WN 仍持有 CH + `keep2` learner（约各 14 个 region）。
+- store-type 已是 **`columnar`**（`tiup cluster reload j4 -R tidb --ignore-config-check`）。`-R tidb` 仍会重生全部 TiFlash `run_tiflash.sh`；已在 CN0/CN1 重新注入 `TIFLASH_COLUMNAR=true`，WN 脚本保持干净。
+- TiDB `columnar` 之后观察 TP+AP **10 min**（2026-09-09 20:16–20:26）：bench 全程在跑；NEW_ORDER TPM 2294–4571（起 3639 / 终 2931，Avg ~10ms）；AP 每窗 22 条 Q*，无 Error/FAIL；WN 292/293 **始终各 14 region**。
+- **PD group `tiflash` 14 条 rule 故意保留**（含 CH 12 表 + `smoke.t` table 17 + `mig_side.keep2` table 75）。**先做 `rollback_read_path`，回滚测完再删 rule / 缩容 WN。**
 
 **未做（下一 agent 的工作面）**
 
-- `forward` 下线 WN：TiDB `cse.columnar-store-type=columnar`（restart TiDB）→ 删 PD group `tiflash` rules → 两 WN `regions/store/<id>` 长度为 0 → `tiup cluster scale-in` WN
+- 独立用例 **`rollback_read_path`**：两 CN 切回 classic（`use_columnar=false`，去掉 `TIFLASH_COLUMNAR`，`-N` reload/restart）；K 轮对账走 WN；**不改 store-type，不删 rule，不缩容**。
+- `forward` 下线 WN（**回滚测完之后**）：删 PD group `tiflash` rules → 两 WN `regions/store/<id>` 长度为 0 → `tiup cluster scale-in` WN
 - 旁路库 epoch C（`store-type=columnar` 且 WN 已抽空或已缩容之后）
-- 独立用例 `rollback_read_path`（不要插在这条曲线中间）
 - 1500 warehouse、Grafana import、把对账收成仓库脚本
 
 ## 旁路库 epoch A（2026-09-09）
@@ -107,6 +109,7 @@ CN0 = **`10.2.12.81:5040`**（测试计划端口表）。CN1 = `5045`，先不�
 1. 切前再确认当前 `count>0` 表 `columnar_status.ready==total`（含 `keep2`，不含 `flip`）。
 2. `tiup cluster show-config j4` 改 **仅该 CN** 的 `flash.use_columnar: true`，`tiup cluster edit-config j4 --topology-file … -y`。不要用 python `yaml.dump` 回写整份 topo（会制造大段空白 diff；只改那一个键）。
 3. `tiup cluster reload j4 -N 10.2.12.81:<tcp> --ignore-config-check -y`  
+   **永远**加 `-R <component>` 或 `-N host:port`，禁止无限定的整集群 reload。即便 `-R tidb` 也会重生所有 TiFlash `run_tiflash.sh`。  
    若此时还没有 env，classic 二进制会带着 `use_columnar=true` 起来然后立刻退出：`Columnar storage is not supported in current build`（systemd status 48，端口 9540 等 2min 超时）。这是预期失败，不是集群坏了。
 4. **reload 之后立刻** 在该 CN 的 `scripts/run_tiflash.sh` 里 `export RUST_BACKTRACE=1` 后面加一行：
    ```bash
@@ -160,6 +163,59 @@ CN1 = **`10.2.12.81:5045`**。切之前再确认当前 `count>0` 表 `ready==tot
 ### 观察期对账
 
 两 CN 都是 columnar 后 K=10 轮同一套 snapshot SQL，全部 PASS。不要等 `unconverted-l0-count`。第 1 轮 `order_line` COUNT=10944855、`SUM(ol_amount)=3350563943.81`；第 10 轮 COUNT=11057523。`keep2` 仍是 1000 / 5005000。AP 无持续报错。
+
+## TiDB `columnar` + 10min 观察（2026-09-09）
+
+已执行：`cse.columnar-store-type=columnar`（8040 / 8041），`tiup cluster reload j4 -R tidb --ignore-config-check`。日志标记：`# ===== store-type=columnar restart start/end =====`、`# ===== store-type=columnar observe 10min start/end =====`。
+
+**故意没做：** 没有删 PD group `tiflash` rules，没有 scale-in WN。留给 `rollback_read_path` 用。
+
+`-R tidb` 的副作用：generate 会重生 **全部** TiFlash `run_tiflash.sh`，CN 上的 `TIFLASH_COLUMNAR` 被抹掉。当时进程仍是内存里的 columnar；脚本已重新注入 5040/5045，WN 5060/5065 保持干净。
+
+10 min 负载（20:16–20:26，每 2 min 采样 6 次）：
+
+| t | NEW_ORDER TPM | Avg(ms) | AP Q* | WN 292 / 293 |
+|---|---|---|---|---|
+| 0s | 3639 | 10.6 | 22 | 14 / 14 |
+| 2min | 4571 | 11.0 | 22 | 14 / 14 |
+| 4min | 2606 | 10.9 | 22 | 14 / 14 |
+| 6min | 3637 | 10.6 | 22 | 14 / 14 |
+| 8min | 2294 | 10.2 | 22 | 14 / 14 |
+| 10min | 2932 | 10.4 | 22 | 14 / 14 |
+
+TP/AP 全程在跑，日志尾部无 Error/FAIL。TPM 在 2.3k–4.6k 波动，不是停跑。
+
+### 当前集群快照（观察结束时，仍有效）
+
+| 项 | 值 |
+|---|---|
+| 集群 | **只动 `j4`**。不要动 `j1` / `j3` |
+| TiDB | `cse.columnar-store-type=columnar`（SYSTEM 8040 / ks1 **8041**） |
+| TiKV | `kvengine.build-columnar=true`，grpc 7540，status **16540** |
+| CN0 | `10.2.12.81:5040` store **295**，`tiflash-columnar`，`use_columnar=true`，`TIFLASH_COLUMNAR=true` |
+| CN1 | `10.2.12.81:5045` store **294**，同上 |
+| WN0 | `10.2.12.81:5060` store **292**（learner 口 9560），classic，**无** `TIFLASH_COLUMNAR`，14 region |
+| WN1 | `10.2.12.81:5065` store **293**（learner 口 9565），同上，14 region |
+| PD | client **6540**；group `tiflash` **14 条 rule 仍在** |
+| 负载 | TP `logs/tpcc-tp.log`、AP `logs/ch-ap.log`（ks1 `8041` / `tpcc`），gitignored |
+| 旁路 | `mig_side.keep2` id 75 replica 2；`flip` id 77 无 replica 行 |
+
+PD `tiflash` rule id：`keyspace-1-table-{17,23,25,27,29,31,33,35,37,39,41,43,45,75}-r`（`smoke.t` + CH 12 表 + `keep2`）。**不要删。**
+
+### `rollback_read_path` 注意（下一步，等用户说再动手）
+
+只把两台 CN 切回 classic，证明还能走 WN。其它旋钮不动：
+
+- **不改** `cse.columnar-store-type`（保持 `columnar`）
+- **不删** PD `tiflash` rules
+- **不** scale-in WN
+- 每台 CN：`flash.use_columnar: false`，去掉 `export TIFLASH_COLUMNAR=true`，`reload -N 10.2.12.81:<tcp>`
+- 进程必须回到 `.../binaries/tiflash/tiflash`（不是 `tiflash-columnar`）
+- 对账仍用同一套 snapshot SQL；此时 `tidb_isolation_read_engines=tiflash` 应打到 WN。WN region 数应仍约 14，不能是 0
+- 切完再确认：5040/5045 脚本 **没有** `TIFLASH_COLUMNAR`；5060/5065 也没有
+- reload **必须** `-R` 或 `-N`。无限定 reload 会冲掉全部 TiFlash 脚本。即便 `-N` 一台，generate 仍会重生 **所有** `run_tiflash.sh`
+
+回滚测完、用户确认后，才删 rule → 等 WN `regions/store/<id>` 长度为 0 → `tiup cluster scale-in` `10.2.12.81:5060` 和 `:5065`。
 
 ## 对账：注意点
 
@@ -258,9 +314,10 @@ WHERE ol_delivery_d IS NOT NULL AND ol_quantity BETWEEN 1 AND 10;
 
 - **集群 `j4`，2 WN + 2 CN。不要动已有 `j1` / `j3`。** j3 已是 columnar CN。
 - CH 打在用户 keyspace（`ks1`），不要打 SYSTEM。
-- 起始：`--cn-mode disagg`，`cse.columnar-store-type=tiflash`，**不要**给任何节点设 `TIFLASH_COLUMNAR`。WN 全程禁止该变量。当前已是 `both` + `build-columnar=true`；**两台 CN 都是 columnar**。
+- 起始：`--cn-mode disagg`，`cse.columnar-store-type=tiflash`，**不要**给任何节点设 `TIFLASH_COLUMNAR`。WN 全程禁止该变量。当前已是 **`columnar`** + `build-columnar=true`；**两台 CN 都是 columnar**。
 - 打开双重物化：toml + **重启 TiKV 和 TiDB**，不用 `POST /build_columnar`。
-- store-type 顺序：`tiflash` → `both` →（观察后、**删 PD rule 之前**）`columnar`。仍为 `both` 时删 PD group `tiflash` 规则会被 Replica Manager 修回来。**现在还是 `both`，不要删 rule。**
+- store-type 顺序：`tiflash` → `both` →（观察后、**删 PD rule 之前**）`columnar`。仍为 `both` 时删 PD group `tiflash` 规则会被 Replica Manager 修回来。**现在已是 `columnar`，但 rule / WN 故意留着做 rollback，不要删。**
+- `tiup cluster reload` **必须** `-R` 或 `-N`。无限定 reload 会把 CN env 一并冲掉。
 - 切 CN 前：相关表 `columnar_status.ready==total`。**不要**等 `unconverted-l0-count` 收敛；columnar 读会拉 TiKV snapshot（memtable + 未转换 L0 + `.col`）。
 - 切 CN = `flash.use_columnar` + `TIFLASH_COLUMNAR` + **重启该 CN**。`reload -N` 一台也会重生 **所有** TiFlash 的 `run_tiflash.sh`，CN0/CN1 的 env 都要在 generate 之后立刻补回。`use_columnar` 只在启动生效。
 - **永远不要**对 CH 表 `SET TIFLASH REPLICA 0` 来抽 WN（会拆掉 schema-manager）。旁路库另做 replica 矩阵。
@@ -282,11 +339,11 @@ python3 gen_tiflash_cluster_topo.py --cluster j4 \
 ## 建议下一跳（等用户明确说再动手）
 
 1. 读本文件、[j4-lab.md](./j4-lab.md) 和测试计划，再读 `tiup-columnar-deploy`。
-2. TiDB `cse.columnar-store-type=columnar`，**只 reload/restart TiDB**（不要这时删 rule）。
-3. 确认 Replica Manager 不再补写后，`GET /pd/api/v1/config/placement-rule/tiflash`，按 rule id `DELETE /pd/api/v1/config/rule/tiflash/{rule_id}`。
+2. **先做 `rollback_read_path`**：两 CN 切回 classic（`-N` reload，去掉 `TIFLASH_COLUMNAR`）；对账走 WN。不改 `columnar-store-type`，**不删 PD tiflash rules，不缩容 WN**。
+3. 回滚测完、用户确认后再删 rule：`GET /pd/api/v1/config/placement-rule/tiflash`，按 rule id `DELETE /pd/api/v1/config/rule/tiflash/{rule_id}`。
 4. 等两个 WN `GET /pd/api/v1/regions/store/<id>` 长度为 0（超时则 fail），再 `tiup cluster scale-in` WN；必要时 `prune`。
 5. 旁路库 [epoch C](./online-migrate-tiflash-write-to-columnar-test.md#旁路表-replica-矩阵)：SET 2 不得再出 WN learner，只应有 columnar。
-6. 不要在这条 CH 曲线中间跑 `rollback_read_path`。1 warehouse `forward` 走完后再考虑 1500 和独立回退用例。
+6. 1 warehouse `forward`+rollback 走完后再考虑 1500。
 7. TP/AP 仍在跑就不要无故杀掉。对账脚本若要长期保留，放到本仓库。
 
 ## Suggested skills
