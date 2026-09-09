@@ -2,7 +2,7 @@
 
 - Date: 2026-09-09
 - Cluster: **`j4`**（新建，未改 `j1` / `j3`）
-- Status: 起始态已部署并 smoke 通过；CH 1 warehouse **尚未灌数**
+- Status: 起始态已部署并 smoke 通过；**1 warehouse CH 已灌入 ks1 `tpcc`**（replica 2 `AVAILABLE=1`，未 `run` 持续负载）
 - 测试计划仍以 [online-migrate-tiflash-write-to-columnar-test.md](./online-migrate-tiflash-write-to-columnar-test.md) 为准。本文只记这次落地的事实和导入命令。
 
 ## 部署结果
@@ -175,3 +175,30 @@ tiup bench ch -H 10.2.12.81 -P 8041 -U root \
 `-S` 默认 10080；prepare 一般不需要。若 bench 报 status 错，加 `-S 8541`。
 
 1500 warehouse：同一套命令把 `--warehouses` 改成 `1500`，并先把集群 `--scale full`（见测试计划）。流程验证通过前不要开 1500。
+
+## 1 warehouse 导入结果（2026-09-09）
+
+已执行上面步骤 1–5，**未** `tiup bench ch run`。
+
+- TPC-C `prepare` + `check` 通过（tiup bench v1.12.0）
+- `ch prepare` 建成 `nation` / `region` / `supplier` / view `revenue1`
+- `ALTER DATABASE tpcc SET TIFLASH REPLICA 2`：12 张基表 `AVAILABLE=1`、`PROGRESS=1`（view 无 replica 行）
+- 两个 WN（store 292 `:9560`、293 `:9565`）各 13 个 region；两个 CN region=0
+- `tidb_analyze_column_options=ALL`，已 ANALYZE 12 张基表
+
+| 表 | tikv COUNT |
+|---|---|
+| warehouse | 1 |
+| district | 10 |
+| customer | 30000 |
+| item | 100000 |
+| stock | 100000 |
+| orders | 30000 |
+| new_order | 9000 |
+| order_line | 300029 |
+| history | 30000 |
+| nation | 25 |
+| region | 5 |
+| supplier | 10000 |
+
+抽查 tiflash：`order_line` 300029、`customer` 30000、`stock` 100000、`supplier` 10000，与 TiKV 一致。

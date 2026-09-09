@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-09  
 **From session:** [online migrate plan](b82293f5-1288-42d3-8d18-d4abdf1e43c0)  
-**Next session focus:** `j4` 已在起始态跑着。不要重开设计。按 [j4-lab.md](./j4-lab.md) 灌 1 warehouse CH，再按测试计划跑 `forward` / `rollback_read_path`。
+**Next session focus:** `j4` 起始态已跑，1 warehouse CH 已在 ks1 `tpcc`。不要重开设计。用户确认后再起持续 TP+AP，按测试计划跑 `forward` / `rollback_read_path`。
 
 ## Goal
 
@@ -32,10 +32,10 @@
 - 生成脚本可用；PD `replication.location-labels: [zone, host]` 已写入脚本。
 - **`j4` 已 deploy / offline patch / start**，起始态 2 classic CN + 2 WN。细节：[j4-lab.md](./j4-lab.md)。
 - ks1 `smoke.t` replica 2，TiKV 与 tiflash COUNT/SUM 一致。
+- **1 warehouse CH 已灌入 ks1 `tpcc`**（replica 2 AVAILABLE=1，已 ANALYZE，未 `run`）。见 [j4-lab.md](./j4-lab.md)。
 
 **未做（下一 agent 的工作面）**
 
-- 尚未灌 1 warehouse CH-benCHmark（命令已写在 j4-lab.md，未执行）。
 - 无持续 TP+AP、对账脚本、Grafana import。
 - 未跑 `forward` / `rollback_read_path`，更未跑 1500 warehouse。
 - 混合 CN 窗口正确性是产品要求，实验室尚未实证。
@@ -68,7 +68,7 @@ python3 gen_tiflash_cluster_topo.py --cluster j4 \
 ## 建议下一跳（等用户说「灌数 / 开跑」）
 
 1. 读 [j4-lab.md](./j4-lab.md) 和测试计划，再读 `tiup-columnar-deploy`。
-2. 按 j4-lab 灌 1 warehouse CH（`tpcc` on 8041）→ replica 2 → `AVAILABLE=1` → ANALYZE。不要在导入阶段 `run`。
+2. 1 warehouse 已在 `tpcc`。起持续 TP+AP 后再走 `forward`（含混合 CN 对账）。不要在未授权时 `tiup bench ch run`。
 3. 1 warehouse 走完整 `forward` 流程（含混合 CN 对账）后再考虑 1500 和独立 `rollback_read_path`。
 4. 操作脚本若要长期保留，放到本仓库，不要只留在 tiflash-2 `docs/`。
 
